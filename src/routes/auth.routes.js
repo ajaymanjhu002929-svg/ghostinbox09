@@ -15,7 +15,7 @@ const router = express.Router();
 
 const FRONTEND_URL =
   process.env.FRONTEND_URL ||
-  "http://localhost:5173";
+  "https://ghostinbox09.netlify.app";
 
 // ==========================================
 // GOOGLE LOGIN

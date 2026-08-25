@@ -1,25 +1,34 @@
 const express = require("express");
 const passport = require("../config/passport");
-const generateToken = require("../utils/jwt");
-const authMiddleware = require("../middleware/authMiddleware");
+
+const generateToken =
+  require("../utils/jwt");
+
+const authMiddleware =
+  require("../middleware/authMiddleware");
 
 const {
   getMe,
+  logout,
+  deleteAccount,
 } = require("../controllers/auth.controller");
 
-const router = express.Router();
+const router =
+  express.Router();
 
-// ==========================================
+
+// ============================================================
 // FRONTEND URL
-// ==========================================
+// ============================================================
 
 const FRONTEND_URL =
   process.env.FRONTEND_URL ||
   "https://ghostinbox09.netlify.app";
 
-// ==========================================
+
+// ============================================================
 // GOOGLE LOGIN
-// ==========================================
+// ============================================================
 
 router.get(
   "/google",
@@ -34,12 +43,14 @@ router.get(
   )
 );
 
-// ==========================================
+
+// ============================================================
 // GOOGLE CALLBACK
-// ==========================================
+// ============================================================
 
 router.get(
   "/google/callback",
+
   passport.authenticate(
     "google",
     {
@@ -51,7 +62,13 @@ router.get(
   ),
 
   (req, res) => {
+
     try {
+
+      // ------------------------------------------
+      // GENERATE JWT
+      // ------------------------------------------
+
       const token =
         generateToken(
           req.user._id
@@ -60,6 +77,10 @@ router.get(
       const isProduction =
         process.env.NODE_ENV ===
         "production";
+
+      // ------------------------------------------
+      // SET COOKIE
+      // ------------------------------------------
 
       res.cookie(
         "token",
@@ -96,14 +117,14 @@ router.get(
         req.user.isProfileComplete
       );
 
-      // ========================================
+      // ------------------------------------------
       // REDIRECT
-      // ========================================
+      // ------------------------------------------
 
       if (
-        req.user
-          .isProfileComplete
+        req.user.isProfileComplete
       ) {
+
         return res.redirect(
           `${FRONTEND_URL}/discover`
         );
@@ -112,7 +133,9 @@ router.get(
       return res.redirect(
         `${FRONTEND_URL}/create-profile`
       );
+
     } catch (error) {
+
       console.error(
         "Google callback error:",
         error
@@ -125,14 +148,56 @@ router.get(
   }
 );
 
-// ==========================================
+
+// ============================================================
+// LOGOUT
+// ============================================================
+//
+// POST /api/auth/logout
+//
+// Auth required because logout ke time user ko offline
+// mark karna hai.
+// ============================================================
+
+router.post(
+  "/logout",
+  authMiddleware,
+  logout
+);
+
+
+// ============================================================
+// DELETE ACCOUNT
+// ============================================================
+//
+// DELETE /api/auth/delete-account
+//
+// Complete account cleanup.
+// ============================================================
+
+router.delete(
+  "/delete-account",
+  authMiddleware,
+  deleteAccount
+);
+
+
+// ============================================================
 // GET CURRENT USER
-// ==========================================
+// ============================================================
+//
+// GET /api/auth/me
+// ============================================================
 
 router.get(
   "/me",
   authMiddleware,
   getMe
 );
+
+
+// ============================================================
+// EXPORT
+// ============================================================
 
 module.exports = router;

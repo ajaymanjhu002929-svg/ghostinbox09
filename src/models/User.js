@@ -116,6 +116,22 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    // ==========================================
+    // ONLINE / OFFLINE STATUS
+    // ==========================================
+
+    isOnline: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    lastSeen: {
+      type: Date,
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,
@@ -124,33 +140,8 @@ const userSchema = new mongoose.Schema(
 
 
 // ==========================================
-// USERNAME INDEX
+// EXPORT
 // ==========================================
-//
-// Same username dobara create nahi hoga.
-// Example:
-//
-// ajay  -> allowed
-// ajay  -> NOT allowed
-//
-// lowercase ki wajah se:
-//
-// Ajay
-// ajay
-// AJAY
-//
-// teeno same username maane jayenge.
-// ==========================================
-
-userSchema.index(
-  {
-    username: 1,
-  },
-  {
-    unique: true,
-  }
-);
-
 
 module.exports = mongoose.model(
   "User",

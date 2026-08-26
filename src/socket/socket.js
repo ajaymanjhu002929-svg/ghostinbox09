@@ -1,773 +1,1328 @@
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+const Message = require("../models/Message");
+const Connection = require("../models/Connection");
+const Evidence = require("../models/Evidence");
 
-import jwt from "jsonwebtoken";
-import cookie from "cookie";
+const {
+  detectSafety,
+} = require("../utils/safetyDetector");
+// ============================================================
+// GET SOCKET TOKEN
+// ============================================================
 
-import userModel from "../models/User.js";
-import connectionModel from "../models/Connection.js";
-import messageModel from "../models/Message.js";
+const getSocketToken = (
+  socket
+) => {
 
-// ======================================================
-// ONLINE USERS
-// ======================================================
+  // ------------------------------------------
+  // TOKEN FROM SOCKET AUTH
+  // ------------------------------------------
 
-const onlineUsers = new Map();
+  if (
+    socket.handshake.auth?.token
+  ) {
+    return socket.handshake.auth.token;
+  }
 
-// userId -> Set of socketIds
-// Ek user multiple tabs/devices se connected ho sakta hai.
+  // ------------------------------------------
+  // TOKEN FROM COOKIE
+  // ------------------------------------------
 
-// ======================================================
-// GET USER ID FROM COOKIE
-// ======================================================
+  const cookieHeader =
+    socket.handshake.headers?.cookie;
 
-const getUserIdFromSocket = (socket) => {
-  try {
-    const rawCookie = socket.handshake.headers.cookie;
-
-    if (!rawCookie) {
-      return null;
-    }
-
-    const cookies = cookie.parse(rawCookie);
-
-    const token = cookies.token;
-
-    if (!token) {
-      return null;
-    }
-
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    );
-
-    return decoded.id || decoded._id || null;
-  } catch (error) {
-    console.error(
-      "SOCKET AUTH ERROR:",
-      error.message
-    );
-
+  if (!cookieHeader) {
     return null;
   }
-};
 
-// ======================================================
-// ADD ONLINE USER
-// ======================================================
+  const tokenCookie =
+    cookieHeader
+      .split(";")
+      .map(
+        (item) =>
+          item.trim()
+      )
+      .find(
+        (item) =>
+          item.startsWith(
+            "token="
+          )
+      );
 
-const addOnlineUser = (userId, socketId) => {
-  const id = userId.toString();
-
-  if (!onlineUsers.has(id)) {
-    onlineUsers.set(id, new Set());
+  if (!tokenCookie) {
+    return null;
   }
 
-  onlineUsers.get(id).add(socketId);
-};
-
-// ======================================================
-// REMOVE ONLINE USER
-// ======================================================
-
-const removeOnlineUser = (userId, socketId) => {
-  const id = userId.toString();
-
-  const sockets = onlineUsers.get(id);
-
-  if (!sockets) {
-    return;
-  }
-
-  sockets.delete(socketId);
-
-  if (sockets.size === 0) {
-    onlineUsers.delete(id);
-
-    return true;
-  }
-
-  return false;
-};
-
-// ======================================================
-// CHECK ONLINE
-// ======================================================
-
-const isUserOnline = (userId) => {
-  if (!userId) {
-    return false;
-  }
-
-  return onlineUsers.has(
-    userId.toString()
+  return decodeURIComponent(
+    tokenCookie.substring(
+      "token=".length
+    )
   );
 };
 
-// ======================================================
-// EMIT PRESENCE
-// ======================================================
 
-const emitPresence = (
-  io,
+// ============================================================
+// GET ACTIVE CONNECTION
+// ============================================================
+
+const getConnection = async (
+  connectionId,
   userId,
-  isOnline,
-  lastSeen = null
+  receiverId = null
 ) => {
-  io.emit("user-presence", {
-    userId: userId.toString(),
-    online: isOnline,
-    lastSeen,
-  });
+
+  const connection =
+    await Connection.findOne({
+
+      _id:
+        connectionId,
+
+      status:
+        "active",
+
+      $or: [
+        {
+          user1:
+            userId,
+        },
+        {
+          user2:
+            userId,
+        },
+      ],
+
+      removedBy: {
+        $ne:
+          userId,
+      },
+    });
+
+  if (!connection) {
+    return null;
+  }
+
+  // ------------------------------------------
+  // CHECK RECEIVER IS ALSO PARTICIPANT
+  // ------------------------------------------
+
+  if (receiverId) {
+
+    const receiverIsParticipant =
+      connection.user1.toString() ===
+        receiverId.toString() ||
+
+      connection.user2.toString() ===
+        receiverId.toString();
+
+    if (!receiverIsParticipant) {
+      return null;
+    }
+  }
+
+  return connection;
 };
 
-// ======================================================
-// SOCKET SETUP
-// ======================================================
 
-const setupSocket = (io) => {
-  // ====================================================
-  // SOCKET AUTH MIDDLEWARE
-  // ====================================================
+// ============================================================
+// CREATE AUTOMATIC EVIDENCE
+// ============================================================
 
-  io.use((socket, next) => {
-    const userId =
-      getUserIdFromSocket(socket);
+const createAutomaticEvidence =
+  async ({
+    connection,
+    message,
+    receiver,
+    category,
+  }) => {
 
-    if (!userId) {
-      return next(
-        new Error("Unauthorized socket connection")
-      );
-    }
+    try {
 
-    socket.userId = userId.toString();
+      // ------------------------------------------
+      // CHECK EXISTING EVIDENCE
+      // ------------------------------------------
 
-    next();
-  });
+      let evidence =
+        await Evidence.findOne({
 
-  // ====================================================
-  // CONNECTION
-  // ====================================================
+          connection:
+            connection._id,
 
-  io.on("connection", async (socket) => {
-    const userId = socket.userId;
-
-    console.log(
-      "SOCKET CONNECTED:",
-      userId,
-      socket.id
-    );
-
-    // --------------------------------------------------
-    // ADD USER ONLINE
-    // --------------------------------------------------
-
-    addOnlineUser(
-      userId,
-      socket.id
-    );
-
-    // --------------------------------------------------
-    // JOIN PERSONAL USER ROOM
-    // --------------------------------------------------
-
-    socket.join(
-      `user:${userId}`
-    );
-
-    // --------------------------------------------------
-    // SEND CURRENT PRESENCE
-    // --------------------------------------------------
-
-    emitPresence(
-      io,
-      userId,
-      true,
-      null
-    );
-
-    // ==================================================
-    // SEND CURRENT ONLINE STATUS TO CONNECTED CLIENT
-    // ==================================================
-
-    socket.on(
-      "check-user-presence",
-      (targetUserId, callback) => {
-        const online =
-          isUserOnline(targetUserId);
-
-        if (typeof callback === "function") {
-          callback({
-            success: true,
-            online,
-          });
-        }
-      }
-    );
-
-    // ==================================================
-    // JOIN CONNECTION ROOM
-    // ==================================================
-
-    socket.on(
-      "join-connection",
-      async (
-        connectionId,
-        callback
-      ) => {
-        try {
-          if (!connectionId) {
-            return callback?.({
-              success: false,
-              message:
-                "Connection ID is required",
-            });
-          }
-
-          const connection =
-            await connectionModel.findById(
-              connectionId
-            );
-
-          if (!connection) {
-            return callback?.({
-              success: false,
-              message:
-                "Connection not found",
-            });
-          }
-
-          const user1 =
-            connection.user1?.toString();
-
-          const user2 =
-            connection.user2?.toString();
-
-          if (
-            userId !== user1 &&
-            userId !== user2
-          ) {
-            return callback?.({
-              success: false,
-              message:
-                "You are not part of this connection",
-            });
-          }
-
-          socket.join(
-            `connection:${connectionId}`
-          );
-
-          callback?.({
-            success: true,
-          });
-        } catch (error) {
-          console.error(
-            "JOIN CONNECTION ERROR:",
-            error
-          );
-
-          callback?.({
-            success: false,
-            message:
-              "Unable to join connection",
-          });
-        }
-      }
-    );
-
-    // ==================================================
-    // TYPING START
-    // ==================================================
-
-    socket.on(
-      "typing-start",
-      async (data) => {
-        try {
-          const {
-            connectionId,
-            receiverId,
-          } = data || {};
-
-          if (
-            !connectionId ||
-            !receiverId
-          ) {
-            return;
-          }
-
-          const connection =
-            await connectionModel.findById(
-              connectionId
-            );
-
-          if (!connection) {
-            return;
-          }
-
-          const user1 =
-            connection.user1?.toString();
-
-          const user2 =
-            connection.user2?.toString();
-
-          if (
-            userId !== user1 &&
-            userId !== user2
-          ) {
-            return;
-          }
-
-          if (
-            receiverId.toString() !==
-              user1 &&
-            receiverId.toString() !==
-              user2
-          ) {
-            return;
-          }
-
-          io.to(
-            `user:${receiverId}`
-          ).emit(
-            "user-typing",
-            {
-              userId,
-              connectionId:
-                connectionId.toString(),
-              typing: true,
-            }
-          );
-        } catch (error) {
-          console.error(
-            "TYPING START ERROR:",
-            error
-          );
-        }
-      }
-    );
-
-    // ==================================================
-    // TYPING STOP
-    // ==================================================
-
-    socket.on(
-      "typing-stop",
-      async (data) => {
-        try {
-          const {
-            connectionId,
-            receiverId,
-          } = data || {};
-
-          if (
-            !connectionId ||
-            !receiverId
-          ) {
-            return;
-          }
-
-          io.to(
-            `user:${receiverId}`
-          ).emit(
-            "user-typing",
-            {
-              userId,
-              connectionId:
-                connectionId.toString(),
-              typing: false,
-            }
-          );
-        } catch (error) {
-          console.error(
-            "TYPING STOP ERROR:",
-            error
-          );
-        }
-      }
-    );
-
-    // ==================================================
-    // SEND MESSAGE
-    // ==================================================
-
-    socket.on(
-      "send-message",
-      async (
-        data,
-        callback
-      ) => {
-        try {
-          const {
-            connectionId,
+          savedBy:
             receiver,
-            text,
-          } = data || {};
 
-          if (
-            !connectionId ||
-            !receiver ||
-            !text?.trim()
-          ) {
-            return callback?.({
-              success: false,
-              message:
-                "Connection, receiver and message are required",
-            });
-          }
+          status: {
+            $in: [
+              "saved",
+              "reported",
+            ],
+          },
+        });
 
-          // --------------------------------------------
-          // CHECK CONNECTION
-          // --------------------------------------------
+      // ------------------------------------------
+      // EXISTING EVIDENCE
+      // ------------------------------------------
 
-          const connection =
-            await connectionModel.findById(
-              connectionId
-            );
+      if (evidence) {
 
-          if (!connection) {
-            return callback?.({
-              success: false,
-              message:
-                "Connection not found",
-            });
-          }
-
-          // --------------------------------------------
-          // CHECK USER BELONGS TO CONNECTION
-          // --------------------------------------------
-
-          const user1 =
-            connection.user1?.toString();
-
-          const user2 =
-            connection.user2?.toString();
-
-          if (
-            userId !== user1 &&
-            userId !== user2
-          ) {
-            return callback?.({
-              success: false,
-              message:
-                "You are not part of this connection",
-            });
-          }
-
-          // --------------------------------------------
-          // CHECK RECEIVER
-          // --------------------------------------------
-
-          const receiverId =
-            receiver.toString();
-
-          if (
-            receiverId !== user1 &&
-            receiverId !== user2
-          ) {
-            return callback?.({
-              success: false,
-              message:
-                "Invalid receiver",
-            });
-          }
-
-          if (
-            receiverId === userId
-          ) {
-            return callback?.({
-              success: false,
-              message:
-                "You cannot send message to yourself",
-            });
-          }
-
-          // --------------------------------------------
-          // CREATE MESSAGE
-          // --------------------------------------------
-
-          const message =
-            await messageModel.create({
-              connection:
-                connectionId,
-              sender: userId,
-              receiver: receiverId,
-              text: text.trim(),
-            });
-
-          // --------------------------------------------
-          // POPULATE MESSAGE
-          // --------------------------------------------
-
-          const populatedMessage =
-            await messageModel
-              .findById(message._id)
-              .populate(
-                "sender",
-                "username photo gender age"
-              )
-              .populate(
-                "receiver",
-                "username photo gender age"
-              );
-
-          // --------------------------------------------
-          // SEND TO RECEIVER
-          // --------------------------------------------
-
-          io.to(
-            `user:${receiverId}`
-          ).emit(
-            "new-message",
-            populatedMessage
+        const alreadyExists =
+          evidence.messages.some(
+            (item) =>
+              item.messageId.toString() ===
+              message._id.toString()
           );
 
-          // --------------------------------------------
-          // SEND TO SENDER
-          // --------------------------------------------
+        if (!alreadyExists) {
 
-          io.to(
-            `user:${userId}`
-          ).emit(
-            "message-sent",
-            populatedMessage
-          );
+          evidence.messages.push({
+            messageId:
+              message._id,
 
-          // --------------------------------------------
-          // STOP TYPING AFTER MESSAGE
-          // --------------------------------------------
+            sender:
+              message.sender,
 
-          io.to(
-            `user:${receiverId}`
-          ).emit(
-            "user-typing",
-            {
-              userId,
-              connectionId:
-                connectionId.toString(),
-              typing: false,
-            }
-          );
+            receiver:
+              message.receiver,
 
-          callback?.({
-            success: true,
-            message:
-              populatedMessage,
+            text:
+              message.text,
+
+            createdAt:
+              message.createdAt,
           });
-        } catch (error) {
-          console.error(
-            "SOCKET SEND MESSAGE ERROR:",
-            error
-          );
 
-          callback?.({
-            success: false,
-            message:
-              error.message ||
-              "Failed to send message",
-          });
+          await evidence.save();
         }
+
+        return evidence;
       }
-    );
 
-    // ==================================================
-    // MESSAGE READ
-    // ==================================================
+      // ------------------------------------------
+      // FIND REPORTED USER
+      // ------------------------------------------
 
-    socket.on(
-      "message-read",
-      async (
-        data,
-        callback
-      ) => {
-        try {
-          const {
-            messageId,
-          } = data || {};
+      const reportedUser =
+        connection.user1.toString() ===
+        receiver.toString()
+          ? connection.user2
+          : connection.user1;
 
-          if (!messageId) {
-            return callback?.({
-              success: false,
-              message:
-                "Message ID is required",
-            });
-          }
+      // ------------------------------------------
+      // CREATE EVIDENCE
+      // ------------------------------------------
 
-          const message =
-            await messageModel.findById(
-              messageId
-            );
+      evidence =
+        await Evidence.create({
 
-          if (!message) {
-            return callback?.({
-              success: false,
-              message:
-                "Message not found",
-            });
-          }
+          connection:
+            connection._id,
 
-          // --------------------------------------------
-          // ONLY RECEIVER CAN MARK READ
-          // --------------------------------------------
+          savedBy:
+            receiver,
 
-          if (
-            message.receiver?.toString() !==
-            userId
-          ) {
-            return callback?.({
-              success: false,
-              message:
-                "Only receiver can mark message as read",
-            });
-          }
+          reportedUser,
 
-          message.isRead = true;
-          message.readAt = new Date();
-
-          await message.save();
-
-          // --------------------------------------------
-          // INFORM SENDER
-          // --------------------------------------------
-
-          io.to(
-            `user:${message.sender.toString()}`
-          ).emit(
-            "message-read",
+          messages: [
             {
               messageId:
                 message._id,
-              readAt:
-                message.readAt,
-            }
-          );
 
-          callback?.({
-            success: true,
-          });
-        } catch (error) {
-          console.error(
-            "MESSAGE READ ERROR:",
-            error
-          );
+              sender:
+                message.sender,
 
-          callback?.({
-            success: false,
-            message:
-              error.message ||
-              "Failed to mark message as read",
-          });
-        }
+              receiver:
+                message.receiver,
+
+              text:
+                message.text,
+
+              createdAt:
+                message.createdAt,
+            },
+          ],
+
+          category:
+            category ||
+            "harmful_content",
+
+          reason:
+            "Automatically preserved because harmful content was detected.",
+
+          status:
+            "saved",
+
+          reportedAt:
+            null,
+        });
+
+      return evidence;
+
+    } catch (error) {
+
+      console.error(
+        "Automatic evidence error:",
+        error
+      );
+
+      return null;
+    }
+  };
+
+
+// ============================================================
+// GET OTHER USERS FROM ACTIVE CONNECTIONS
+// ============================================================
+
+const getConnectedUserIds =
+  async (userId) => {
+
+    try {
+
+      const connections =
+        await Connection.find({
+
+          status:
+            "active",
+
+          $or: [
+            {
+              user1:
+                userId,
+            },
+            {
+              user2:
+                userId,
+            },
+          ],
+
+          removedBy: {
+            $ne:
+              userId,
+          },
+        }).select(
+          "user1 user2"
+        );
+
+      const userIds =
+        new Set();
+
+      for (
+        const connection
+        of connections
+      ) {
+
+        const otherUserId =
+          connection.user1.toString() ===
+          userId.toString()
+
+            ? connection.user2.toString()
+
+            : connection.user1.toString();
+
+        userIds.add(
+          otherUserId
+        );
       }
-    );
 
-    // ==================================================
-    // SAFETY PROMPT
-    // ==================================================
+      return [
+        ...userIds,
+      ];
 
-    socket.on(
-      "safety-prompt",
-      (data) => {
+    } catch (error) {
+
+      console.error(
+        "Get connected users error:",
+        error
+      );
+
+      return [];
+    }
+  };
+
+
+// ============================================================
+// EMIT PRESENCE TO CONNECTED USERS
+// ============================================================
+
+const emitPresenceToConnections =
+  async (
+    io,
+    userId,
+    isOnline,
+    lastSeen = null
+  ) => {
+
+    try {
+
+      const connectedUserIds =
+        await getConnectedUserIds(
+          userId
+        );
+
+      for (
+        const connectedUserId
+        of connectedUserIds
+      ) {
+
+        io.to(
+          `user:${connectedUserId}`
+        ).emit(
+          "user-presence",
+          {
+            userId:
+              userId.toString(),
+
+            isOnline,
+
+            lastSeen,
+          }
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Presence emit error:",
+        error
+      );
+    }
+  };
+
+
+// ============================================================
+// CHECK IF USER STILL HAS ACTIVE SOCKET
+// ============================================================
+
+const hasActiveSocket =
+  async (
+    io,
+    userId
+  ) => {
+
+    try {
+
+      const sockets =
+        await io
+          .in(
+            `user:${userId}`
+          )
+          .fetchSockets();
+
+      return (
+        sockets.length > 0
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Active socket check error:",
+        error
+      );
+
+      return false;
+    }
+  };
+
+
+// ============================================================
+// INITIALIZE SOCKET
+// ============================================================
+
+const initializeSocket =
+  (io) => {
+
+    // ========================================================
+    // SOCKET AUTHENTICATION
+    // ========================================================
+
+    io.use(
+      async (
+        socket,
+        next
+      ) => {
+
         try {
-          const {
-            receiverId,
-            message,
-          } = data || {};
 
-          if (!receiverId) {
-            return;
+          const token =
+            getSocketToken(
+              socket
+            );
+
+          if (!token) {
+
+            return next(
+              new Error(
+                "Authentication required"
+              )
+            );
           }
 
-          io.to(
-            `user:${receiverId}`
-          ).emit(
-            "safety-prompt",
-            {
-              message:
-                message ||
-                "This conversation may contain harmful content.",
-            }
-          );
+          // ------------------------------------------
+          // VERIFY JWT
+          // ------------------------------------------
+
+          const decoded =
+            jwt.verify(
+              token,
+              process.env.JWT_SECRET
+            );
+
+          const userId =
+            decoded.userId;
+
+          if (!userId) {
+
+            return next(
+              new Error(
+                "Invalid authentication token"
+              )
+            );
+          }
+
+          // ------------------------------------------
+          // CHECK USER STILL EXISTS
+          // ------------------------------------------
+          //
+          // Important for deleted accounts.
+          // ------------------------------------------
+
+          const user =
+            await User.findById(
+              userId
+            ).select("_id");
+
+          if (!user) {
+
+            return next(
+              new Error(
+                "User account not found"
+              )
+            );
+          }
+
+          socket.userId =
+            user._id;
+
+          next();
+
         } catch (error) {
+
           console.error(
-            "SAFETY PROMPT SOCKET ERROR:",
-            error
+            "Socket auth error:",
+            error.message
+          );
+
+          next(
+            new Error(
+              "Invalid authentication"
+            )
           );
         }
       }
     );
 
-    // ==================================================
-    // DISCONNECT
-    // ==================================================
 
-    socket.on(
-      "disconnect",
-      async (reason) => {
+    // ========================================================
+    // SOCKET CONNECTION
+    // ========================================================
+
+    io.on(
+      "connection",
+      async (
+        socket
+      ) => {
+
+        const userId =
+          socket.userId.toString();
+
         console.log(
-          "SOCKET DISCONNECTED:",
-          userId,
-          socket.id,
-          reason
+          "Socket connected:",
+          userId
         );
 
-        // --------------------------------------------
-        // REMOVE THIS SOCKET
-        // --------------------------------------------
+        // ------------------------------------------
+        // JOIN USER ROOM
+        // ------------------------------------------
 
-        const becameOffline =
-          removeOnlineUser(
-            userId,
-            socket.id
-          );
+        socket.join(
+          `user:${userId}`
+        );
 
-        // --------------------------------------------
-        // If another tab/device is still connected,
-        // user is still ONLINE.
-        // --------------------------------------------
+        // ------------------------------------------
+        // MARK USER ONLINE
+        // ------------------------------------------
 
-        if (!becameOffline) {
-          return;
-        }
+        await User.findByIdAndUpdate(
+          userId,
+          {
+            isOnline:
+              true,
 
-        // --------------------------------------------
-        // LAST SEEN
-        // --------------------------------------------
+            lastSeen:
+              null,
+          }
+        );
 
-        const lastSeen =
-          new Date();
+        // ------------------------------------------
+        // NOTIFY CONNECTED USERS
+        // ------------------------------------------
 
-        try {
-          await userModel.findByIdAndUpdate(
-            userId,
-            {
-              lastSeen,
-            }
-          );
-        } catch (error) {
-          console.error(
-            "LAST SEEN UPDATE ERROR:",
-            error
-          );
-        }
-
-        // --------------------------------------------
-        // INFORM EVERYONE
-        // --------------------------------------------
-
-        emitPresence(
+        await emitPresenceToConnections(
           io,
           userId,
-          false,
-          lastSeen
+          true,
+          null
+        );
+
+
+        // ======================================================
+        // TYPING START
+        // ======================================================
+
+        socket.on(
+          "typing-start",
+          async (
+            data,
+            callback
+          ) => {
+
+            try {
+
+              const {
+                connectionId,
+                receiver,
+              } =
+                data || {};
+
+              if (
+                !connectionId ||
+                !receiver
+              ) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Connection ID and receiver are required",
+                });
+              }
+
+              // ------------------------------------------
+              // VERIFY CONNECTION
+              // ------------------------------------------
+
+              const connection =
+                await getConnection(
+                  connectionId,
+                  userId,
+                  receiver
+                );
+
+              if (!connection) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Active connection not found",
+                });
+              }
+
+              // ------------------------------------------
+              // SEND TYPING EVENT
+              // ------------------------------------------
+
+              io.to(
+                `user:${receiver.toString()}`
+              ).emit(
+                "user-typing",
+                {
+                  connectionId:
+                    connection._id.toString(),
+
+                  userId:
+                    userId,
+
+                  isTyping:
+                    true,
+                }
+              );
+
+              return callback?.({
+                success:
+                  true,
+              });
+
+            } catch (error) {
+
+              console.error(
+                "Typing start error:",
+                error
+              );
+
+              return callback?.({
+                success:
+                  false,
+
+                message:
+                  "Failed to send typing status",
+              });
+            }
+          }
+        );
+
+
+        // ======================================================
+        // TYPING STOP
+        // ======================================================
+
+        socket.on(
+          "typing-stop",
+          async (
+            data,
+            callback
+          ) => {
+
+            try {
+
+              const {
+                connectionId,
+                receiver,
+              } =
+                data || {};
+
+              if (
+                !connectionId ||
+                !receiver
+              ) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Connection ID and receiver are required",
+                });
+              }
+
+              // ------------------------------------------
+              // VERIFY CONNECTION
+              // ------------------------------------------
+
+              const connection =
+                await getConnection(
+                  connectionId,
+                  userId,
+                  receiver
+                );
+
+              if (!connection) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Active connection not found",
+                });
+              }
+
+              // ------------------------------------------
+              // SEND STOP TYPING
+              // ------------------------------------------
+
+              io.to(
+                `user:${receiver.toString()}`
+              ).emit(
+                "user-typing",
+                {
+                  connectionId:
+                    connection._id.toString(),
+
+                  userId:
+                    userId,
+
+                  isTyping:
+                    false,
+                }
+              );
+
+              return callback?.({
+                success:
+                  true,
+              });
+
+            } catch (error) {
+
+              console.error(
+                "Typing stop error:",
+                error
+              );
+
+              return callback?.({
+                success:
+                  false,
+
+                message:
+                  "Failed to stop typing status",
+              });
+            }
+          }
+        );
+
+
+        // ======================================================
+        // SEND MESSAGE
+        // ======================================================
+
+        socket.on(
+          "send-message",
+          async (
+            data,
+            callback
+          ) => {
+
+            try {
+
+              const {
+                connectionId,
+                receiver,
+                text,
+              } =
+                data || {};
+
+              // ------------------------------------------
+              // VALIDATION
+              // ------------------------------------------
+
+              if (!connectionId) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Connection ID is required",
+                });
+              }
+
+              if (!receiver) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Receiver is required",
+                });
+              }
+
+              if (
+                !text ||
+                !text.trim()
+              ) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Message cannot be empty",
+                });
+              }
+
+              if (
+                userId ===
+                receiver.toString()
+              ) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "You cannot message yourself",
+                });
+              }
+
+              // ------------------------------------------
+              // CONNECTION CHECK
+              // ------------------------------------------
+
+              const connection =
+                await getConnection(
+                  connectionId,
+                  userId,
+                  receiver
+                );
+
+              if (!connection) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Active connection not found",
+                });
+              }
+
+              const cleanText =
+                text.trim();
+
+              // ------------------------------------------
+              // SAFETY CHECK
+              // ------------------------------------------
+
+              const safetyResult =
+                detectSafety(
+                  cleanText
+                );
+
+              const isFlagged =
+                safetyResult?.isHarmful ===
+                true;
+
+              const isSavedAsEvidence =
+                isFlagged;
+
+              // ------------------------------------------
+              // SAVE MESSAGE
+              // ------------------------------------------
+
+              const message =
+                await Message.create({
+
+                  connection:
+                    connection._id,
+
+                  sender:
+                    userId,
+
+                  receiver:
+                    receiver,
+
+                  text:
+                    cleanText,
+
+                  isRead:
+                    false,
+
+                  readAt:
+                    null,
+
+                  expiresAt:
+                    null,
+
+                  isFlagged,
+
+                  isSavedAsEvidence,
+                });
+
+              // ------------------------------------------
+              // AUTOMATIC EVIDENCE
+              // ------------------------------------------
+
+              let evidence =
+                null;
+
+              if (isFlagged) {
+
+                evidence =
+                  await createAutomaticEvidence({
+                    connection,
+                    message,
+                    receiver,
+                    category:
+                      safetyResult?.category,
+                  });
+
+                // ----------------------------------------
+                // KEEP MESSAGE PERMANENT
+                // ----------------------------------------
+
+                message.isSavedAsEvidence =
+                  true;
+
+                message.evidenceSavedAt =
+                  new Date();
+
+                message.expiresAt =
+                  null;
+
+                await message.save();
+              }
+
+              // ------------------------------------------
+              // STOP TYPING AUTOMATICALLY
+              // ------------------------------------------
+
+              io.to(
+                `user:${receiver.toString()}`
+              ).emit(
+                "user-typing",
+                {
+                  connectionId:
+                    connection._id.toString(),
+
+                  userId:
+                    userId,
+
+                  isTyping:
+                    false,
+                }
+              );
+
+              // ------------------------------------------
+              // SEND MESSAGE TO RECEIVER
+              // ------------------------------------------
+
+              io.to(
+                `user:${receiver.toString()}`
+              ).emit(
+                "new-message",
+                message
+              );
+
+              // ------------------------------------------
+              // SAFETY PROMPT
+              // ------------------------------------------
+
+              if (isFlagged) {
+
+                io.to(
+                  `user:${receiver.toString()}`
+                ).emit(
+                  "safety-prompt",
+                  {
+                    messageId:
+                      message._id,
+
+                    connectionId:
+                      connection._id,
+
+                    message:
+                      message.text,
+
+                    category:
+                      safetyResult?.category ||
+                      "harmful_content",
+
+                    isHarmful:
+                      true,
+
+                    autoSavedAsEvidence:
+                      true,
+
+                    evidenceId:
+                      evidence?._id ||
+                      null,
+
+                    messageIds: [
+                      message._id,
+                    ],
+                  }
+                );
+              }
+
+              // ------------------------------------------
+              // SENDER
+              // ------------------------------------------
+
+              socket.emit(
+                "message-sent",
+                message
+              );
+
+              // ------------------------------------------
+              // SUCCESS
+              // ------------------------------------------
+
+              return callback?.({
+                success:
+                  true,
+
+                message,
+
+                safety: {
+                  isHarmful:
+                    isFlagged,
+
+                  category:
+                    safetyResult?.category ||
+                    null,
+
+                  autoSavedAsEvidence:
+                    isSavedAsEvidence,
+
+                  evidenceId:
+                    evidence?._id ||
+                    null,
+                },
+              });
+
+            } catch (error) {
+
+              console.error(
+                "Send message error:",
+                error
+              );
+
+              return callback?.({
+                success:
+                  false,
+
+                message:
+                  "Failed to send message",
+              });
+            }
+          }
+        );
+
+
+        // ======================================================
+        // MESSAGE READ
+        // ======================================================
+
+        socket.on(
+          "message-read",
+          async (
+            data,
+            callback
+          ) => {
+
+            try {
+
+              const {
+                messageId,
+              } =
+                data || {};
+
+              if (!messageId) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Message ID is required",
+                });
+              }
+
+              // ------------------------------------------
+              // FIND UNREAD MESSAGE
+              // ------------------------------------------
+
+              const message =
+                await Message.findOne({
+
+                  _id:
+                    messageId,
+
+                  receiver:
+                    userId,
+
+                  isRead:
+                    false,
+                });
+
+              if (!message) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Unread message not found",
+                });
+              }
+
+              // ------------------------------------------
+              // CONNECTION CHECK
+              // ------------------------------------------
+
+              const connection =
+                await getConnection(
+                  message.connection,
+                  userId
+                );
+
+              if (!connection) {
+
+                return callback?.({
+                  success:
+                    false,
+
+                  message:
+                    "Connection no longer active",
+                });
+              }
+
+              // ------------------------------------------
+              // READ TIME
+              // ------------------------------------------
+
+              const readAt =
+                new Date();
+
+              message.isRead =
+                true;
+
+              message.readAt =
+                readAt;
+
+              // ------------------------------------------
+              // EXPIRATION
+              // ------------------------------------------
+
+              if (
+                message.isSavedAsEvidence
+              ) {
+
+                message.expiresAt =
+                  null;
+
+              } else {
+
+                message.expiresAt =
+                  new Date(
+                    readAt.getTime() +
+                    10 *
+                    60 *
+                    1000
+                  );
+              }
+
+              await message.save();
+
+              // ------------------------------------------
+              // NOTIFY SENDER
+              // ------------------------------------------
+
+              io.to(
+                `user:${message.sender.toString()}`
+              ).emit(
+                "message-read",
+                {
+                  messageId:
+                    message._id,
+
+                  readAt,
+                }
+              );
+
+              return callback?.({
+                success:
+                  true,
+
+                message,
+              });
+
+            } catch (error) {
+
+              console.error(
+                "Message read error:",
+                error
+              );
+
+              return callback?.({
+                success:
+                  false,
+
+                message:
+                  "Failed to mark message as read",
+              });
+            }
+          }
+        );
+
+
+        // ======================================================
+        // DISCONNECT
+        // ======================================================
+
+        socket.on(
+          "disconnect",
+          async () => {
+
+            console.log(
+              "Socket disconnected:",
+              userId
+            );
+
+            try {
+
+              // ------------------------------------------
+              // IMPORTANT:
+              // Agar same user ki doosri tab/socket
+              // abhi connected hai to offline mat karo.
+              // ------------------------------------------
+
+              const stillOnline =
+                await hasActiveSocket(
+                  io,
+                  userId
+                );
+
+              if (
+                stillOnline
+              ) {
+                return;
+              }
+
+              // ------------------------------------------
+              // MARK OFFLINE
+              // ------------------------------------------
+
+              const lastSeen =
+                new Date();
+
+              const updatedUser =
+                await User.findByIdAndUpdate(
+                  userId,
+                  {
+                    isOnline:
+                      false,
+
+                    lastSeen,
+                  },
+                  {
+                    new:
+                      true,
+                  }
+                );
+
+              if (!updatedUser) {
+                return;
+              }
+
+              // ------------------------------------------
+              // NOTIFY CONNECTED USERS
+              // ------------------------------------------
+
+              await emitPresenceToConnections(
+                io,
+                userId,
+                false,
+                lastSeen
+              );
+
+            } catch (error) {
+
+              console.error(
+                "Socket disconnect presence error:",
+                error
+              );
+            }
+          }
         );
       }
     );
-  });
+  };
+
+
+module.exports = {
+  initializeSocket,
 };
-
-// ======================================================
-// EXPORT
-// ======================================================
-
-export default setupSocket;
-

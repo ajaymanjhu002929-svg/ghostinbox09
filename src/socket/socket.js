@@ -652,6 +652,70 @@ const initializeSocket =
 
 
         // ======================================================
+        // GET CURRENT PRESENCE
+        // ======================================================
+
+        socket.on(
+          "get-user-presence",
+          async (data, callback) => {
+            try {
+              const requestedUserId =
+                data?.userId ||
+                data?.receiverId ||
+                null;
+
+              if (!requestedUserId) {
+                return callback?.({
+                  success: false,
+                  message: "User ID is required",
+                });
+              }
+
+              const requestedUser =
+                await User.findById(
+                  requestedUserId
+                ).select(
+                  "_id isOnline lastSeen"
+                );
+
+              if (!requestedUser) {
+                return callback?.({
+                  success: false,
+                  message: "User not found",
+                });
+              }
+
+              socket.emit(
+                "user-presence",
+                {
+                  userId: requestedUser._id.toString(),
+                  isOnline: Boolean(
+                    requestedUser.isOnline
+                  ),
+                  lastSeen:
+                    requestedUser.lastSeen || null,
+                }
+              );
+
+              return callback?.({
+                success: true,
+              });
+            } catch (error) {
+              console.error(
+                "Get user presence error:",
+                error
+              );
+
+              return callback?.({
+                success: false,
+                message: "Failed to get user presence",
+              });
+            }
+          }
+        );
+
+
+        // ======================================================
         // TYPING START
         // ======================================================
 
@@ -724,6 +788,9 @@ const initializeSocket =
                     connection._id.toString(),
 
                   userId:
+                    userId,
+
+                  senderId:
                     userId,
 
                   isTyping:
@@ -828,6 +895,9 @@ const initializeSocket =
                     connection._id.toString(),
 
                   userId:
+                    userId,
+
+                  senderId:
                     userId,
 
                   isTyping:

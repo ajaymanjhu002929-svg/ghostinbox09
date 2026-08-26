@@ -23,7 +23,7 @@ const router =
 
 const FRONTEND_URL =
   process.env.FRONTEND_URL ||
-  "https://ghostinbox09.netlify.app";
+  "https://ghostinbox009.vercel.app";
 
 
 // ============================================================

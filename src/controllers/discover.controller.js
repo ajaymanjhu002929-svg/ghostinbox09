@@ -1,8 +1,19 @@
 const User = require("../models/User");
 
-
 // ==========================================
 // DISCOVER USERS
+// ==========================================
+//
+// Supported filters:
+//   /api/discover
+//   /api/discover?category=all
+//   /api/discover?category=loyal
+//   /api/discover?category=casual
+//   /api/discover?search=ajay
+//   /api/discover?search=ajay&category=loyal
+//
+// The frontend can therefore show All / Loyal / Casual
+// without changing the existing profile model or routes.
 // ==========================================
 
 const getDiscoverUsers = async (req, res) => {
@@ -20,70 +31,66 @@ const getDiscoverUsers = async (req, res) => {
       });
     }
 
-
     // ==========================================
-    // SEARCH VALUE
-    // ==========================================
-    //
-    // Frontend:
-    //
-    // /api/discover?search=k
-    //
-    // /api/discover?search=kh
-    //
-    // /api/discover?search=khushi
-    //
+    // QUERY VALUES
     // ==========================================
 
     const search = req.query.search?.trim() || "";
+    const requestedCategory =
+      req.query.category?.trim().toLowerCase() || "all";
 
+    // ==========================================
+    // CATEGORY VALIDATION
+    // ==========================================
+
+    const allowedCategories = [
+      "all",
+      "loyal",
+      "casual",
+    ];
+
+    if (!allowedCategories.includes(requestedCategory)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid discover category",
+      });
+    }
 
     // ==========================================
     // BASE QUERY
     // ==========================================
 
     const query = {
-      // Apne aap ko discover me mat dikhao
+      // Never show the current user.
       _id: {
         $ne: req.userId,
       },
 
-      // Sirf completed profiles
+      // Only completed profiles are discoverable.
       isProfileComplete: true,
-
-      // Same category ke users
-      category: currentUser.category,
     };
 
+    // ==========================================
+    // CATEGORY FILTER
+    // ==========================================
+    //
+    // ALL    -> no category restriction
+    // LOYAL  -> only loyal profiles
+    // CASUAL -> only casual profiles
+    //
+    // This replaces the old behaviour where the backend
+    // always forced the current user's category.
+    // ==========================================
+
+    if (requestedCategory !== "all") {
+      query.category = requestedCategory;
+    }
 
     // ==========================================
     // USERNAME SEARCH
     // ==========================================
-    //
-    // search = "k"
-    //
-    // khushi     ✅
-    // kajal      ✅
-    // karan      ✅
-    // ajay       ❌
-    //
-    // search = "kh"
-    //
-    // khushi     ✅
-    // kajal      ❌
-    //
-    // search = "khu"
-    //
-    // khushi     ✅
-    // khushi123  ✅
-    // akhushi    ❌
-    //
-    // ==========================================
 
     if (search) {
-
-      // Special regex characters escape
-      // kar rahe hain.
       const escapedSearch = search.replace(
         /[.*+?^${}()|[\]\\]/g,
         "\\$&"
@@ -95,17 +102,23 @@ const getDiscoverUsers = async (req, res) => {
       };
     }
 
-
     // ==========================================
     // FIND USERS
+    // ==========================================
+    // Online users are returned first. The rest are
+    // ordered by newest profile without changing the
+    // actual data returned to the frontend.
     // ==========================================
 
     const users = await User.find(query)
       .select(
-        "_id username photo gender age category about interests lookingFor qualities"
+        "_id username photo gender age category about interests lookingFor qualities isOnline lastSeen createdAt"
       )
+      .sort({
+        isOnline: -1,
+        createdAt: -1,
+      })
       .limit(20);
-
 
     // ==========================================
     // RESPONSE
@@ -114,11 +127,10 @@ const getDiscoverUsers = async (req, res) => {
     return res.status(200).json({
       success: true,
       count: users.length,
+      category: requestedCategory,
       users,
     });
-
   } catch (error) {
-
     console.error(
       "Discover users error:",
       error
@@ -130,11 +142,6 @@ const getDiscoverUsers = async (req, res) => {
     });
   }
 };
-
-
-// ==========================================
-// EXPORT
-// ==========================================
 
 module.exports = {
   getDiscoverUsers,

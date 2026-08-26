@@ -1,9 +1,11 @@
-const jwt = require("jsonwebtoken");
-const cookie = require("cookie");
 
-const userModel = require("../models/User");
-const connectionModel = require("../models/Connection");
-const messageModel = require("../models/Message");
+import jwt from "jsonwebtoken";
+import cookie from "cookie";
+
+import userModel from "../models/User.js";
+import connectionModel from "../models/Connection.js";
+import messageModel from "../models/Message.js";
+
 // ======================================================
 // ONLINE USERS
 // ======================================================
@@ -767,6 +769,5 @@ const setupSocket = (io) => {
 // EXPORT
 // ======================================================
 
-module.exports = {
-  initializeSocket: setupSocket,
-};
+export default setupSocket;
+

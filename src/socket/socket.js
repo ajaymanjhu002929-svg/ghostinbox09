@@ -390,6 +390,72 @@ const emitPresenceToConnections =
 
 
 // ============================================================
+// SEND CURRENT PRESENCE OF CONNECTED USERS TO A NEW SOCKET
+// ============================================================
+
+const emitCurrentPresenceToUser =
+  async (
+    io,
+    userId,
+    socket
+  ) => {
+
+    try {
+
+      const connectedUserIds =
+        await getConnectedUserIds(
+          userId
+        );
+
+      if (
+        connectedUserIds.length === 0
+      ) {
+        return;
+      }
+
+      const users =
+        await User.find({
+          _id: {
+            $in: connectedUserIds,
+          },
+        }).select(
+          "_id isOnline lastSeen"
+        );
+
+      for (
+        const user
+        of users
+      ) {
+
+        socket.emit(
+          "user-presence",
+          {
+            userId:
+              user._id.toString(),
+
+            isOnline:
+              Boolean(
+                user.isOnline
+              ),
+
+            lastSeen:
+              user.lastSeen ||
+              null,
+          }
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Initial presence error:",
+        error
+      );
+    }
+  };
+
+
+// ============================================================
 // CHECK IF USER STILL HAS ACTIVE SOCKET
 // ============================================================
 
@@ -574,6 +640,16 @@ const initializeSocket =
           null
         );
 
+        // ------------------------------------------
+        // SEND CURRENT STATUS OF ALL CONNECTIONS
+        // ------------------------------------------
+
+        await emitCurrentPresenceToUser(
+          io,
+          userId,
+          socket
+        );
+
 
         // ======================================================
         // TYPING START
@@ -590,9 +666,14 @@ const initializeSocket =
 
               const {
                 connectionId,
-                receiver,
+                receiver: receiverValue,
+                receiverId,
               } =
                 data || {};
+
+              const receiver =
+                receiverValue ||
+                receiverId;
 
               if (
                 !connectionId ||
@@ -689,9 +770,14 @@ const initializeSocket =
 
               const {
                 connectionId,
-                receiver,
+                receiver: receiverValue,
+                receiverId,
               } =
                 data || {};
+
+              const receiver =
+                receiverValue ||
+                receiverId;
 
               if (
                 !connectionId ||

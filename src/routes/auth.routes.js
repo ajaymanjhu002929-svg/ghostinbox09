@@ -16,6 +16,18 @@ const FRONTEND_URL =
   process.env.FRONTEND_URL ||
   "https://ghostinbox009.vercel.app";
 
+const getCookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite:
+    process.env.NODE_ENV === "production"
+      ? "none"
+      : "lax",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+  path: "/",
+});
+
+
 
 // ============================================================
 // GOOGLE LOGIN
@@ -68,6 +80,19 @@ router.get(
         req.user.isProfileComplete
       );
 
+      // ------------------------------------------
+      // SET AUTH COOKIE
+      // ------------------------------------------
+      // The frontend also receives the JWT in the
+      // redirect URL for localStorage fallback, but
+      // the server must establish the authenticated
+      // cookie here so all protected fetch() calls
+      // work for a brand-new browser/device too.
+      res.cookie(
+        "token",
+        token,
+        getCookieOptions()
+      );
 
       // ------------------------------------------
       // SEND TOKEN TO FRONTEND

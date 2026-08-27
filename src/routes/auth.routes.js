@@ -1,11 +1,8 @@
 const express = require("express");
 const passport = require("../config/passport");
 
-const generateToken =
-  require("../utils/jwt");
-
-const authMiddleware =
-  require("../middleware/authMiddleware");
+const generateToken = require("../utils/jwt");
+const authMiddleware = require("../middleware/authMiddleware");
 
 const {
   getMe,
@@ -13,25 +10,11 @@ const {
   deleteAccount,
 } = require("../controllers/auth.controller");
 
-const router =
-  express.Router();
-
-
-// ============================================================
-// FRONTEND URL
-// ============================================================
+const router = express.Router();
 
 const FRONTEND_URL =
   process.env.FRONTEND_URL ||
   "https://ghostinbox009.vercel.app";
-
-
-// ============================================================
-// CHECK PRODUCTION / HTTPS
-// ============================================================
-
-const isProduction =
-  FRONTEND_URL.startsWith("https://");
 
 
 // ============================================================
@@ -40,15 +23,12 @@ const isProduction =
 
 router.get(
   "/google",
-  passport.authenticate(
-    "google",
-    {
-      scope: [
-        "profile",
-        "email",
-      ],
-    }
-  )
+  passport.authenticate("google", {
+    scope: [
+      "profile",
+      "email",
+    ],
+  })
 );
 
 
@@ -59,15 +39,12 @@ router.get(
 router.get(
   "/google/callback",
 
-  passport.authenticate(
-    "google",
-    {
-      session: false,
+  passport.authenticate("google", {
+    session: false,
 
-      failureRedirect:
-        `${FRONTEND_URL}/auth`,
-    }
-  ),
+    failureRedirect:
+      `${FRONTEND_URL}/auth`,
+  }),
 
   (req, res) => {
 
@@ -78,55 +55,8 @@ router.get(
       // ------------------------------------------
 
       const token =
-        generateToken(
-          req.user._id
-        );
+        generateToken(req.user._id);
 
-
-      // ------------------------------------------
-      // SET AUTH COOKIE
-      // ------------------------------------------
-      //
-      // Production:
-      // Vercel frontend + Render backend
-      //
-      // secure: true
-      // sameSite: "none"
-      //
-      // Localhost:
-      // secure: false
-      // sameSite: "lax"
-      // ------------------------------------------
-
-      res.cookie(
-        "token",
-        token,
-        {
-          httpOnly: true,
-
-          secure:
-            isProduction,
-
-          sameSite:
-            isProduction
-              ? "none"
-              : "lax",
-
-          maxAge:
-            7 *
-            24 *
-            60 *
-            60 *
-            1000,
-
-          path: "/",
-        }
-      );
-
-
-      // ------------------------------------------
-      // LOG
-      // ------------------------------------------
 
       console.log(
         "Google login successful:",
@@ -138,36 +68,21 @@ router.get(
         req.user.isProfileComplete
       );
 
-      console.log(
-        "Auth cookie configured:",
-        {
-          secure:
-            isProduction,
-
-          sameSite:
-            isProduction
-              ? "none"
-              : "lax",
-        }
-      );
-
 
       // ------------------------------------------
-      // REDIRECT
+      // SEND TOKEN TO FRONTEND
       // ------------------------------------------
 
-      if (
-        req.user.isProfileComplete
-      ) {
+      if (req.user.isProfileComplete) {
 
         return res.redirect(
-          `${FRONTEND_URL}/discover`
+          `${FRONTEND_URL}/auth-callback?token=${encodeURIComponent(token)}&redirect=discover`
         );
       }
 
 
       return res.redirect(
-        `${FRONTEND_URL}/create-profile`
+        `${FRONTEND_URL}/auth-callback?token=${encodeURIComponent(token)}&redirect=create-profile`
       );
 
     } catch (error) {
@@ -217,9 +132,5 @@ router.get(
   getMe
 );
 
-
-// ============================================================
-// EXPORT
-// ============================================================
 
 module.exports = router;

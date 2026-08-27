@@ -8,7 +8,9 @@ const {
   getMessages,
   markMessageAsRead,
   markAllMessagesAsRead,
-  deleteMessage,
+  markMessageAsDelivered,
+  editMessage,
+  deleteMessageForUser,
 } =
   require("../controllers/message.controller");
 
@@ -64,10 +66,22 @@ router.patch(
 // DELETE
 // ==========================================
 
+router.patch(
+  "/:messageId/delivered",
+  authMiddleware,
+  markMessageAsDelivered
+);
+
+router.patch(
+  "/:messageId",
+  authMiddleware,
+  editMessage
+);
+
 router.delete(
   "/:messageId",
   authMiddleware,
-  deleteMessage
+  deleteMessageForUser
 );
 
 

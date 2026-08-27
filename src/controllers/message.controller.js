@@ -63,6 +63,7 @@ const sendMessage = async (req, res) => {
       connectionId,
       receiverId,
       text,
+      replyTo,
     } = req.body;
 
 
@@ -178,6 +179,36 @@ const sendMessage = async (req, res) => {
 
 
     // ------------------------------------------
+    // REPLY VALIDATION
+    // ------------------------------------------
+
+    let replyPreview = null;
+    let replyMessageId = null;
+
+    if (replyTo) {
+      const original = await Message.findOne({
+        _id: replyTo,
+        connection: connectionId,
+        $or: [
+          { sender: senderId },
+          { receiver: senderId },
+        ],
+      });
+
+      if (!original) {
+        return res.status(400).json({
+          success: false,
+          message: "Reply message not found",
+        });
+      }
+
+      replyMessageId = original._id;
+      replyPreview = original.deletedForEveryone
+        ? "Message deleted"
+        : original.text.slice(0, 500);
+    }
+
+    // ------------------------------------------
     // SAFETY DETECTION
     // ------------------------------------------
 
@@ -251,6 +282,18 @@ const sendMessage = async (req, res) => {
       isRead: false,
 
       readAt: null,
+
+      deliveredAt: null,
+
+      edited: false,
+      editedAt: null,
+
+      deletedForEveryone: false,
+      deletedAt: null,
+      deletedFor: [],
+
+      replyTo: replyMessageId,
+      replyPreview,
 
       // Harmful/evidence message ko kabhi
       // automatic expiry nahi deni.
@@ -557,6 +600,8 @@ const markAllMessagesAsRead = async (
           $set: {
             isRead: true,
 
+            deliveredAt: readAt,
+
             readAt,
 
             expiresAt,
@@ -587,6 +632,8 @@ const markAllMessagesAsRead = async (
       {
         $set: {
           isRead: true,
+
+          deliveredAt: readAt,
 
           readAt,
 
@@ -704,6 +751,89 @@ const deleteMessage = async (
 };
 
 
+
+// ==========================================
+// DELIVER MESSAGE
+// ==========================================
+const markMessageAsDelivered = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { messageId } = req.params;
+    const message = await Message.findOne({
+      _id: messageId,
+      receiver: userId,
+    });
+    if (!message) return res.status(404).json({ success:false, message:"Message not found" });
+    await getActiveConnection(message.connection, userId);
+    if (!message.deliveredAt) {
+      message.deliveredAt = new Date();
+      await message.save();
+    }
+    return res.json({ success:true, data:message });
+  } catch (error) {
+    console.error("Deliver message error:", error);
+    return res.status(500).json({ success:false, message:"Failed to mark message as delivered" });
+  }
+};
+
+// ==========================================
+// EDIT MESSAGE
+// ==========================================
+const editMessage = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { messageId } = req.params;
+    const text = req.body?.text?.trim();
+    if (!text) return res.status(400).json({ success:false, message:"Message cannot be empty" });
+    if (text.length > 2000) return res.status(400).json({ success:false, message:"Message is too long" });
+    const message = await Message.findOne({ _id:messageId, sender:userId });
+    if (!message) return res.status(404).json({ success:false, message:"Message not found" });
+    if (message.isSavedAsEvidence) return res.status(403).json({ success:false, message:"Evidence message cannot be edited" });
+    if (message.deletedForEveryone) return res.status(403).json({ success:false, message:"Deleted message cannot be edited" });
+    if (Date.now() - new Date(message.createdAt).getTime() > 15 * 60 * 1000) return res.status(403).json({ success:false, message:"Messages can only be edited for 15 minutes" });
+    message.text = text;
+    message.edited = true;
+    message.editedAt = new Date();
+    await message.save();
+    return res.json({ success:true, data:message });
+  } catch (error) {
+    console.error("Edit message error:", error);
+    return res.status(500).json({ success:false, message:"Failed to edit message" });
+  }
+};
+
+// ==========================================
+// DELETE FOR ME / EVERYONE
+// ==========================================
+const deleteMessageForUser = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { messageId } = req.params;
+    const mode = req.body?.mode || "me";
+    const message = await Message.findOne({ _id:messageId, $or:[{sender:userId},{receiver:userId}] });
+    if (!message) return res.status(404).json({ success:false, message:"Message not found" });
+    if (message.isSavedAsEvidence) return res.status(403).json({ success:false, message:"Evidence message cannot be deleted" });
+
+    if (mode === "everyone") {
+      if (message.sender.toString() !== userId.toString()) return res.status(403).json({ success:false, message:"Only the sender can delete for everyone" });
+      if (Date.now() - new Date(message.createdAt).getTime() > 15 * 60 * 1000) return res.status(403).json({ success:false, message:"Messages can only be deleted for everyone for 15 minutes" });
+      message.deletedForEveryone = true;
+      message.deletedAt = new Date();
+      message.text = "This message was deleted";
+      message.edited = false;
+      await message.save();
+    } else {
+      const already = (message.deletedFor || []).some(id => id.toString() === userId.toString());
+      if (!already) message.deletedFor.push(userId);
+      await message.save();
+    }
+    return res.json({ success:true, data:message, mode });
+  } catch (error) {
+    console.error("Delete message error:", error);
+    return res.status(500).json({ success:false, message:"Failed to delete message" });
+  }
+};
+
 // ==========================================
 // EXPORTS
 // ==========================================
@@ -713,5 +843,7 @@ module.exports = {
   getMessages,
   markMessageAsRead,
   markAllMessagesAsRead,
-  deleteMessage,
+  markMessageAsDelivered,
+  editMessage,
+  deleteMessageForUser,
 };

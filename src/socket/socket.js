@@ -946,6 +946,7 @@ const initializeSocket =
                 connectionId,
                 receiver,
                 text,
+                replyTo,
               } =
                 data || {};
 
@@ -1028,6 +1029,22 @@ const initializeSocket =
               const cleanText =
                 text.trim();
 
+              let replyMessageId = null;
+              let replyPreview = null;
+
+              if (replyTo) {
+                const original = await Message.findOne({
+                  _id: replyTo,
+                  connection: connection._id,
+                  $or: [{ sender:userId }, { receiver:userId }],
+                });
+                if (!original) {
+                  return callback?.({ success:false, message:"Reply message not found" });
+                }
+                replyMessageId = original._id;
+                replyPreview = original.deletedForEveryone ? "Message deleted" : original.text.slice(0,500);
+              }
+
               // ------------------------------------------
               // SAFETY CHECK
               // ------------------------------------------
@@ -1068,6 +1085,17 @@ const initializeSocket =
 
                   readAt:
                     null,
+
+                  deliveredAt:
+                    null,
+
+                  edited: false,
+                  editedAt: null,
+                  deletedForEveryone: false,
+                  deletedAt: null,
+                  deletedFor: [],
+                  replyTo: replyMessageId,
+                  replyPreview,
 
                   expiresAt:
                     null,
@@ -1239,6 +1267,32 @@ const initializeSocket =
 
 
         // ======================================================
+        // MARK CONNECTION READ
+        // ======================================================
+        socket.on("mark-connection-read", async (data, callback) => {
+          try {
+            const { connectionId } = data || {};
+            if (!connectionId) return callback?.({success:false, message:"Connection ID is required"});
+            const connection = await getConnection(connectionId, userId);
+            if (!connection) return callback?.({success:false, message:"Connection no longer active"});
+            const unread = await Message.find({ connection:connectionId, receiver:userId, isRead:false });
+            const readAt = new Date();
+            for (const message of unread) {
+              message.isRead = true;
+              if (!message.deliveredAt) message.deliveredAt = readAt;
+              message.readAt = readAt;
+              message.expiresAt = message.isSavedAsEvidence ? null : new Date(readAt.getTime() + 10*60*1000);
+              await message.save();
+              io.to(`user:${message.sender.toString()}`).emit("message-read", { messageId:message._id, readAt });
+            }
+            callback?.({success:true, modifiedCount:unread.length});
+          } catch (error) {
+            console.error("Mark connection read error:", error);
+            callback?.({success:false, message:"Failed to mark messages as read"});
+          }
+        });
+
+        // ======================================================
         // MESSAGE READ
         // ======================================================
 
@@ -1326,6 +1380,10 @@ const initializeSocket =
               message.isRead =
                 true;
 
+              if (!message.deliveredAt) {
+                message.deliveredAt = readAt;
+              }
+
               message.readAt =
                 readAt;
 
@@ -1395,7 +1453,85 @@ const initializeSocket =
         );
 
 
+        
         // ======================================================
+        // MESSAGE DELIVERED
+        // ======================================================
+        socket.on("message-delivered", async (data, callback) => {
+          try {
+            const { messageId } = data || {};
+            if (!messageId) return callback?.({success:false, message:"Message ID is required"});
+            const message = await Message.findOne({ _id:messageId, receiver:userId });
+            if (!message) return callback?.({success:false, message:"Message not found"});
+            const deliveredAt = message.deliveredAt || new Date();
+            if (!message.deliveredAt) { message.deliveredAt = deliveredAt; await message.save(); }
+            io.to(`user:${message.sender.toString()}`).emit("message-delivered", { messageId:message._id, deliveredAt });
+            callback?.({success:true, deliveredAt});
+          } catch (error) {
+            console.error("Message delivery error:", error);
+            callback?.({success:false, message:"Failed to mark message delivered"});
+          }
+        });
+
+        // ======================================================
+        // EDIT MESSAGE
+        // ======================================================
+        socket.on("edit-message", async (data, callback) => {
+          try {
+            const { messageId, text } = data || {};
+            const cleanText = text?.trim();
+            if (!messageId || !cleanText) return callback?.({success:false, message:"Message ID and text are required"});
+            const message = await Message.findOne({ _id:messageId, sender:userId });
+            if (!message) return callback?.({success:false, message:"Message not found"});
+            if (message.isSavedAsEvidence) return callback?.({success:false, message:"Evidence message cannot be edited"});
+            if (message.deletedForEveryone) return callback?.({success:false, message:"Deleted message cannot be edited"});
+            if (Date.now() - new Date(message.createdAt).getTime() > 15*60*1000) return callback?.({success:false, message:"Messages can only be edited for 15 minutes"});
+            message.text = cleanText;
+            message.edited = true;
+            message.editedAt = new Date();
+            await message.save();
+            io.to(`user:${message.receiver.toString()}`).emit("message-edited", message);
+            socket.emit("message-edited", message);
+            callback?.({success:true, message});
+          } catch (error) {
+            console.error("Socket edit error:", error);
+            callback?.({success:false, message:"Failed to edit message"});
+          }
+        });
+
+        // ======================================================
+        // DELETE MESSAGE
+        // ======================================================
+        socket.on("delete-message", async (data, callback) => {
+          try {
+            const { messageId, mode = "me" } = data || {};
+            if (!messageId) return callback?.({success:false, message:"Message ID is required"});
+            const message = await Message.findOne({ _id:messageId, $or:[{sender:userId},{receiver:userId}] });
+            if (!message) return callback?.({success:false, message:"Message not found"});
+            if (message.isSavedAsEvidence) return callback?.({success:false, message:"Evidence message cannot be deleted"});
+            if (mode === "everyone") {
+              if (message.sender.toString() !== userId.toString()) return callback?.({success:false, message:"Only the sender can delete for everyone"});
+              if (Date.now() - new Date(message.createdAt).getTime() > 15*60*1000) return callback?.({success:false, message:"Messages can only be deleted for everyone for 15 minutes"});
+              message.deletedForEveryone = true;
+              message.deletedAt = new Date();
+              message.text = "This message was deleted";
+              message.edited = false;
+              await message.save();
+              io.to(`user:${message.receiver.toString()}`).emit("message-deleted", { messageId:message._id, mode:"everyone", message });
+              socket.emit("message-deleted", { messageId:message._id, mode:"everyone", message });
+            } else {
+              if (!message.deletedFor.some(id => id.toString() === userId.toString())) message.deletedFor.push(userId);
+              await message.save();
+              socket.emit("message-deleted", { messageId:message._id, mode:"me", userId });
+            }
+            callback?.({success:true, message, mode});
+          } catch (error) {
+            console.error("Socket delete error:", error);
+            callback?.({success:false, message:"Failed to delete message"});
+          }
+        });
+
+// ======================================================
         // DISCONNECT
         // ======================================================
 

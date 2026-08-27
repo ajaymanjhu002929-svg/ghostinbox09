@@ -46,6 +46,48 @@ const messageSchema = new mongoose.Schema(
       default: null,
     },
 
+    deliveredAt: {
+      type: Date,
+      default: null,
+    },
+
+    edited: {
+      type: Boolean,
+      default: false,
+    },
+
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+
+    deletedForEveryone: {
+      type: Boolean,
+      default: false,
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+
+    deletedFor: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    }],
+
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+
+    replyPreview: {
+      type: String,
+      default: null,
+      maxlength: 500,
+    },
+
     expiresAt: {
       type: Date,
       default: null,

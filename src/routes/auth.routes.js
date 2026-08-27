@@ -27,6 +27,14 @@ const FRONTEND_URL =
 
 
 // ============================================================
+// CHECK PRODUCTION / HTTPS
+// ============================================================
+
+const isProduction =
+  FRONTEND_URL.startsWith("https://");
+
+
+// ============================================================
 // GOOGLE LOGIN
 // ============================================================
 
@@ -74,12 +82,20 @@ router.get(
           req.user._id
         );
 
-      const isProduction =
-        process.env.NODE_ENV ===
-        "production";
 
       // ------------------------------------------
-      // SET COOKIE
+      // SET AUTH COOKIE
+      // ------------------------------------------
+      //
+      // Production:
+      // Vercel frontend + Render backend
+      //
+      // secure: true
+      // sameSite: "none"
+      //
+      // Localhost:
+      // secure: false
+      // sameSite: "lax"
       // ------------------------------------------
 
       res.cookie(
@@ -107,6 +123,11 @@ router.get(
         }
       );
 
+
+      // ------------------------------------------
+      // LOG
+      // ------------------------------------------
+
       console.log(
         "Google login successful:",
         req.user._id.toString()
@@ -116,6 +137,20 @@ router.get(
         "Profile complete:",
         req.user.isProfileComplete
       );
+
+      console.log(
+        "Auth cookie configured:",
+        {
+          secure:
+            isProduction,
+
+          sameSite:
+            isProduction
+              ? "none"
+              : "lax",
+        }
+      );
+
 
       // ------------------------------------------
       // REDIRECT
@@ -129,6 +164,7 @@ router.get(
           `${FRONTEND_URL}/discover`
         );
       }
+
 
       return res.redirect(
         `${FRONTEND_URL}/create-profile`
@@ -152,12 +188,6 @@ router.get(
 // ============================================================
 // LOGOUT
 // ============================================================
-//
-// POST /api/auth/logout
-//
-// Auth required because logout ke time user ko offline
-// mark karna hai.
-// ============================================================
 
 router.post(
   "/logout",
@@ -169,11 +199,6 @@ router.post(
 // ============================================================
 // DELETE ACCOUNT
 // ============================================================
-//
-// DELETE /api/auth/delete-account
-//
-// Complete account cleanup.
-// ============================================================
 
 router.delete(
   "/delete-account",
@@ -184,9 +209,6 @@ router.delete(
 
 // ============================================================
 // GET CURRENT USER
-// ============================================================
-//
-// GET /api/auth/me
 // ============================================================
 
 router.get(

@@ -801,7 +801,7 @@ const initializeSocket =
                 await getConnection(
                   connectionId,
                   userId,
-                  targetReceiver
+                  receiver
                 );
 
               if (!connection) {

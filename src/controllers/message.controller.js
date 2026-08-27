@@ -224,7 +224,7 @@ const sendMessage = async (req, res) => {
     if (replyTo) {
       const original = await Message.findOne({
         _id: replyTo,
-        connection: connectionId,
+        connection: connection._id,
         $or: [
           { sender: senderId },
           { receiver: senderId },
@@ -306,12 +306,17 @@ const sendMessage = async (req, res) => {
     // CREATE MESSAGE
     // ------------------------------------------
 
+    const actualReceiverId =
+      connection.user1.toString() === senderId.toString()
+        ? connection.user2
+        : connection.user1;
+
     const message = await Message.create({
-      connection: connectionId,
+      connection: connection._id,
 
       sender: senderId,
 
-      receiver: receiverId,
+      receiver: actualReceiverId,
 
       text: cleanText,
 
@@ -417,7 +422,7 @@ const getMessages = async (req, res) => {
 
     const messages =
       await Message.find({
-        connection: connectionId,
+        connection: connection._id,
 
         $or: [
           { sender: userId },

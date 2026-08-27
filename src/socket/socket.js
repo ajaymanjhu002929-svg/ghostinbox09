@@ -801,7 +801,7 @@ const initializeSocket =
                 await getConnection(
                   connectionId,
                   userId,
-                  receiver
+                  targetReceiver
                 );
 
               if (!connection) {
@@ -985,10 +985,14 @@ const initializeSocket =
               const {
                 connectionId,
                 receiver,
+                receiverId,
                 text,
                 replyTo,
               } =
                 data || {};
+
+              // Support both payload names used by older/newer clients.
+              const targetReceiver = receiver || receiverId;
 
               // ------------------------------------------
               // VALIDATION
@@ -1005,7 +1009,7 @@ const initializeSocket =
                 });
               }
 
-              if (!receiver) {
+              if (!targetReceiver) {
 
                 return callback?.({
                   success:
@@ -1032,7 +1036,7 @@ const initializeSocket =
 
               if (
                 userId ===
-                receiver.toString()
+                targetReceiver.toString()
               ) {
 
                 return callback?.({
@@ -1066,6 +1070,15 @@ const initializeSocket =
                 });
               }
 
+              // Never persist a stale client connectionId/receiver pair.
+              // getConnection() may have resolved the current active connection
+              // after a remove -> request -> accept cycle.
+              const actualConnectionId = connection._id;
+              const actualReceiverId =
+                connection.user1.toString() === userId.toString()
+                  ? connection.user2.toString()
+                  : connection.user1.toString();
+
               const cleanText =
                 text.trim();
 
@@ -1075,7 +1088,7 @@ const initializeSocket =
               if (replyTo) {
                 const original = await Message.findOne({
                   _id: replyTo,
-                  connection: connection._id,
+                  connection: actualConnectionId,
                   $or: [{ sender:userId }, { receiver:userId }],
                 });
                 if (!original) {
@@ -1184,7 +1197,7 @@ const initializeSocket =
               // ------------------------------------------
 
               io.to(
-                `user:${receiver.toString()}`
+                `user:${actualReceiverId.toString()}`
               ).emit(
                 "user-typing",
                 {
@@ -1204,7 +1217,7 @@ const initializeSocket =
               // ------------------------------------------
 
               io.to(
-                `user:${receiver.toString()}`
+                `user:${actualReceiverId.toString()}`
               ).emit(
                 "new-message",
                 message
@@ -1217,7 +1230,7 @@ const initializeSocket =
               if (isFlagged) {
 
                 io.to(
-                  `user:${receiver.toString()}`
+                  `user:${actualReceiverId.toString()}`
                 ).emit(
                   "safety-prompt",
                   {

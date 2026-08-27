@@ -12,9 +12,15 @@ const {
 
 const getActiveConnection = async (
   connectionId,
-  userId
+  userId,
+  receiverId = null
 ) => {
-  return Connection.findOne({
+
+  // ----------------------------------------------------------
+  // FIRST: USE THE CONNECTION ID PROVIDED BY THE CLIENT.
+  // ----------------------------------------------------------
+
+  let connection = await Connection.findOne({
     _id: connectionId,
 
     status: "active",
@@ -28,9 +34,38 @@ const getActiveConnection = async (
       $ne: userId,
     },
   });
+
+  // ----------------------------------------------------------
+  // FALLBACK: FIND THE CURRENT ACTIVE CONNECTION BY USERS.
+  // ----------------------------------------------------------
+  // Handles a stale connectionId after:
+  // remove connection -> request again -> accept request.
+
+  if (!connection && receiverId) {
+
+    connection = await Connection.findOne({
+
+      status: "active",
+
+      $or: [
+        {
+          user1: userId,
+          user2: receiverId,
+        },
+        {
+          user1: receiverId,
+          user2: userId,
+        },
+      ],
+
+      removedBy: {
+        $ne: userId,
+      },
+    });
+  }
+
+  return connection;
 };
-
-
 // ==========================================
 // SEND MESSAGE
 // ==========================================
@@ -118,7 +153,8 @@ const sendMessage = async (req, res) => {
     const connection =
       await getActiveConnection(
         connectionId,
-        senderId
+        senderId,
+        receiverId
       );
 
 
